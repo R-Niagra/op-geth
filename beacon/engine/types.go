@@ -51,6 +51,8 @@ type PayloadAttributes struct {
 
 	// Transactions is a field for rollups: the transactions list is forced into the block
 	Transactions [][]byte `json:"transactions,omitempty"  gencodec:"optional"`
+	NextInfoTxs  [][]byte `json:"nextInfoTxs,omitempty"  gencodec:"optional"`
+
 	// NoTxPool is a field for rollups: if true, the no transactions are taken out of the tx-pool,
 	// only transactions from the above Transactions list will be included.
 	NoTxPool bool `json:"noTxPool,omitempty" gencodec:"optional"`
@@ -67,6 +69,7 @@ type payloadAttributesMarshaling struct {
 	Timestamp hexutil.Uint64
 
 	Transactions  []hexutil.Bytes
+	NextInfoTxs   []hexutil.Bytes
 	GasLimit      *hexutil.Uint64
 	EIP1559Params hexutil.Bytes
 }
