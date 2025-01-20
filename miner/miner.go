@@ -214,6 +214,7 @@ func (miner *Miner) BuildBatchedPayloads(args []*BuildPayloadArgs, witness bool,
 				firstResultRetCh <- &PayloadBuildResult{Payload: pl, Err: err}
 			}
 			if err != nil {
+				log.Error("encountered error in optimistic batch building", "i", i, "err", err)
 				return
 			}
 

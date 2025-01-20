@@ -79,8 +79,9 @@ type environment struct {
 
 	witness *stateless.Witness
 
-	noTxs  bool            // true if we are reproducing a block, and do not have to check interop txs
-	rpcCtx context.Context // context to control block-building RPC work. No RPC allowed if nil.
+	noTxs        bool                          // true if we are reproducing a block, and do not have to check interop txs
+	rpcCtx       context.Context               // context to control block-building RPC work. No RPC allowed if nil.
+	extraHeaders map[common.Hash]*types.Header //set of block headers that may not be part of chain yet
 }
 
 const (
@@ -341,6 +342,14 @@ func (miner *Miner) makeEnvWithState(eParams *EnvParams, parent *types.Header, h
 	if eParams.Parent == nil || eParams.Parent.Hash() != parent.Hash() {
 		return nil, errors.New("parent in params doesn't match with the env parent")
 	}
+	// check if the grandparent header exists in the chain
+	gParent := miner.chain.GetBlockByHash(parent.ParentHash)
+	if gParent == nil {
+		// grandparent doesn't exists. It means that the optimistic payload building is far ahead of
+		// the tip of the chain. Optimistic batch building should stop at this point.
+		// It is not supported atm. Only parent can be missing from the chain
+		return nil, errors.New("missing grandparent")
+	}
 
 	state := eParams.State
 	if witness {
@@ -350,14 +359,18 @@ func (miner *Miner) makeEnvWithState(eParams *EnvParams, parent *types.Header, h
 		}
 		state.StartPrefetcher("miner", bundle)
 	}
+	absentHeaders := make(map[common.Hash]*types.Header)
+	absentHeaders[parent.Hash()] = parent
+
 	// Note the passed coinbase may be different with header.Coinbase.
 	return &environment{
-		signer:   types.MakeSigner(miner.chainConfig, header.Number, header.Time),
-		state:    state,
-		coinbase: coinbase,
-		header:   header,
-		witness:  state.Witness(),
-		rpcCtx:   rpcCtx,
+		signer:       types.MakeSigner(miner.chainConfig, header.Number, header.Time),
+		state:        state,
+		coinbase:     coinbase,
+		header:       header,
+		witness:      state.Witness(),
+		rpcCtx:       rpcCtx,
+		extraHeaders: absentHeaders,
 	}, nil
 
 }
@@ -483,7 +496,7 @@ func (miner *Miner) applyTransaction(env *environment, tx *types.Transaction) (*
 			},
 		}
 	}
-	receipt, err := core.ApplyTransactionExtended(miner.chainConfig, miner.chain, &env.coinbase, env.gasPool, env.state, env.header, tx, &env.header.GasUsed, vm.Config{}, extraOpts)
+	receipt, err := core.ApplyTransactionExtended(miner.chainConfig, miner.chain, &env.coinbase, env.gasPool, env.state, env.header, tx, &env.header.GasUsed, vm.Config{}, extraOpts, env.extraHeaders)
 	if err != nil {
 		env.state.RevertToSnapshot(snap)
 		env.gasPool.SetGas(gp)
@@ -759,6 +772,13 @@ func (miner *Miner) validateParams(genParams *generateParams) (time.Duration, er
 
 	var parent *types.Header
 	if genParams.envParam != nil && genParams.envParam.Parent != nil {
+		gParent := miner.chain.GetBlockByHash(genParams.envParam.Parent.ParentHash)
+		if gParent == nil {
+			// grandparent doesn't exists. It means that the optimistic payload building is far ahead of
+			// the tip of the chain. Optimistic batch building should stop at this point.
+			// It is not supported atm. Only parent can be missing from the chain
+			return 0, errors.New("missing grandparent")
+		}
 		parent = genParams.envParam.Parent
 	} else {
 		// Find the parent block for sealing task

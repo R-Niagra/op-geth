@@ -210,14 +210,14 @@ func MakeReceipt(evm *vm.EVM, result *ExecutionResult, statedb *state.StateDB, b
 // for the transaction, gas used and an error if the transaction failed,
 // indicating the block was invalid.
 func ApplyTransaction(config *params.ChainConfig, bc ChainContext, author *common.Address, gp *GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64, cfg vm.Config) (*types.Receipt, error) {
-	return ApplyTransactionExtended(config, bc, author, gp, statedb, header, tx, usedGas, cfg, nil)
+	return ApplyTransactionExtended(config, bc, author, gp, statedb, header, tx, usedGas, cfg, nil, nil)
 }
 
 type ApplyTransactionOpts struct {
 	PostValidation func(evm *vm.EVM, result *ExecutionResult) error
 }
 
-func ApplyTransactionExtended(config *params.ChainConfig, bc ChainContext, author *common.Address, gp *GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64, cfg vm.Config, extraOpts *ApplyTransactionOpts) (*types.Receipt, error) {
+func ApplyTransactionExtended(config *params.ChainConfig, bc ChainContext, author *common.Address, gp *GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64, cfg vm.Config, extraOpts *ApplyTransactionOpts, extras map[common.Hash]*types.Header) (*types.Receipt, error) {
 	msg, err := TransactionToMessage(tx, types.MakeSigner(config, header.Number, header.Time), header.BaseFee)
 	if err != nil {
 		return nil, err
@@ -225,8 +225,13 @@ func ApplyTransactionExtended(config *params.ChainConfig, bc ChainContext, autho
 	if extraOpts != nil {
 		msg.PostValidation = extraOpts.PostValidation
 	}
-	// Create a new context to be used in the EVM environment
-	blockContext := NewEVMBlockContext(header, bc, author, config, statedb)
+	var blockContext vm.BlockContext
+	if extras == nil {
+		// Create a new context to be used in the EVM environment
+		blockContext = NewEVMBlockContext(header, bc, author, config, statedb)
+	} else {
+		blockContext = NewEVMBlockContextWithExtraHeaders(header, bc, author, config, statedb, extras)
+	}
 	txContext := NewEVMTxContext(msg)
 	vmenv := vm.NewEVM(blockContext, txContext, statedb, config, cfg)
 	return ApplyTransactionWithEVM(msg, config, gp, statedb, header.Number, header.Hash(), tx, usedGas, vmenv)
