@@ -441,6 +441,86 @@ func (api *API) traceChain(start, end *types.Block, config *TraceConfig, closed 
 	return retCh
 }
 
+type txAccessList struct {
+	Accesslist *types.AccessList `json:"accessList"`
+	Error      string            `json:"error,omitempty"`
+	Hash       common.Hash       `json:"hash"`
+}
+
+func (api *API) GetBlockAccessList(ctx context.Context, blockNum uint64) ([]txAccessList, error) {
+
+	if blockNum == 0 {
+		return []txAccessList{}, errors.New("genesis block is not applicable")
+	}
+	log.Warn("block num is: ", "num", blockNum)
+	block, err := api.blockByNumber(ctx, rpc.BlockNumber(blockNum))
+	if err != nil {
+		log.Error("block doesn't exist")
+		return []txAccessList{}, err
+	}
+
+	parent, err := api.blockByNumberAndHash(ctx, rpc.BlockNumber(blockNum-1), block.ParentHash())
+	if err != nil {
+		return []txAccessList{}, err
+	}
+	//generate the state at the parent block
+	statedb, release, err := api.backend.StateAtBlock(ctx, parent, defaultTraceReexec, nil, true, false)
+	if err != nil {
+		return []txAccessList{}, err
+	}
+	defer release()
+
+	return api.blockAccessList(ctx, block, statedb)
+}
+
+func (api *API) blockAccessList(ctx context.Context, block *types.Block, statedb *state.StateDB) ([]txAccessList, error) {
+
+	var (
+		signer      = types.MakeSigner(api.backend.ChainConfig(), block.Number(), block.Time())
+		postMerge   = block.Difficulty().Sign() == 0
+		chainConfig = api.backend.ChainConfig()
+		vmctx       = core.NewEVMBlockContext(block.Header(), api.chainContext(ctx), nil, chainConfig, statedb)
+		blockCtx    = core.NewEVMBlockContext(block.Header(), api.chainContext(ctx), nil, api.backend.ChainConfig(), statedb)
+		precompiles = vm.ActivePrecompiles(api.backend.ChainConfig().Rules(block.Number(), postMerge, block.Time()))
+		acls        []txAccessList
+	)
+	if beaconRoot := block.BeaconRoot(); beaconRoot != nil {
+		vmenv := vm.NewEVM(vmctx, vm.TxContext{}, statedb, chainConfig, vm.Config{})
+		core.ProcessBeaconBlockRoot(*beaconRoot, vmenv, statedb)
+	}
+	if chainConfig.IsPrague(block.Number(), block.Time()) {
+		core.ProcessParentBlockHash(block.ParentHash(), vm.NewEVM(vmctx, vm.TxContext{}, statedb, chainConfig, vm.Config{}), statedb)
+	}
+
+	var to common.Address
+	for ind, tx := range block.Transactions() {
+		from, _ := types.Sender(signer, tx)
+		// create an access list tracer
+		if tx.To() != nil {
+			to = *tx.To()
+		}
+		tracer := logger.NewAccessListTracer(nil, from, to, precompiles)
+		evm := vm.NewEVM(blockCtx, vm.TxContext{}, statedb, api.backend.ChainConfig(), vm.Config{Tracer: tracer.Hooks(), NoBaseFee: true})
+
+		msg, _ := core.TransactionToMessage(tx, signer, block.BaseFee())
+		statedb.SetTxContext(tx.Hash(), ind)
+		res, err := core.ApplyMessage(evm, msg, new(core.GasPool).AddGas(msg.GasLimit))
+		if err != nil {
+			return acls, fmt.Errorf("failed to apply tx: err %v", err)
+		}
+		acl := tracer.AccessList()
+		tracer.PrintAccessList()
+		txAcl := txAccessList{Accesslist: &acl, Hash: tx.Hash()}
+		if res.Err != nil {
+			txAcl.Error = res.Err.Error()
+		}
+		acls = append(acls, txAcl)
+	}
+
+	return acls, nil
+}
+
+// ///
 // TraceBlockByNumber returns the structured logs created during the execution of
 // EVM and returns them as a JSON object.
 func (api *API) TraceBlockByNumber(ctx context.Context, number rpc.BlockNumber, config *TraceConfig) ([]*txTraceResult, error) {

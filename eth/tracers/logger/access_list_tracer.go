@@ -23,6 +23,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
+	"github.com/ethereum/go-ethereum/log"
 )
 
 // accessList is an accumulator for the set of accounts and storage slots an EVM
@@ -162,4 +163,24 @@ func (a *AccessListTracer) AccessList() types.AccessList {
 // Equal returns if the content of two access list traces are equal.
 func (a *AccessListTracer) Equal(other *AccessListTracer) bool {
 	return a.list.equal(other.list)
+}
+
+func (al accessList) Print() {
+	log.Info("printing access list")
+	for k, v := range al {
+		log.Info("entry", "address", k)
+		for s := range v {
+			log.Info("slot", "hash", s.Hex())
+		}
+	}
+
+}
+
+func (a *AccessListTracer) PrintAccessList() {
+	log.Info("excluded access entries, this may contain precompiled contracts")
+	for k, _ := range a.excl {
+		log.Info("entry", "address", k.Hex())
+	}
+	log.Info("Printing other accesses")
+	a.list.Print()
 }

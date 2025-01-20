@@ -165,8 +165,9 @@ var Flags = []cli.Flag{
 }
 
 var (
-	glogger       *log.GlogHandler
-	logOutputFile io.WriteCloser
+	glogger           *log.GlogHandler
+	logOutputFile     io.WriteCloser
+	UseColorByDefault = true
 )
 
 func init() {
@@ -234,7 +235,7 @@ func Setup(ctx *cli.Context) error {
 	case logFmtFlag == "logfmt":
 		handler = log.LogfmtHandler(output)
 	case logFmtFlag == "", logFmtFlag == "terminal":
-		useColor := (isatty.IsTerminal(os.Stderr.Fd()) || isatty.IsCygwinTerminal(os.Stderr.Fd())) && os.Getenv("TERM") != "dumb"
+		useColor := (isatty.IsTerminal(os.Stderr.Fd()) || isatty.IsCygwinTerminal(os.Stderr.Fd())) && os.Getenv("TERM") != "dumb" || UseColorByDefault
 		if useColor {
 			terminalOutput = colorable.NewColorableStderr()
 			if logOutputFile != nil {
