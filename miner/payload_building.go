@@ -29,12 +29,19 @@ import (
 	"github.com/ethereum/go-ethereum/beacon/engine"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/stateless"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/rlp"
 )
+
+// EnvParams are the parameters for building the environment for the execution
+type EnvParams struct {
+	Parent *types.Header
+	State  *state.StateDB // state after the execution of parent block
+}
 
 // BuildPayloadArgs contains the provided parameters for building payload.
 // Check engine-api specification for more details.
@@ -52,6 +59,32 @@ type BuildPayloadArgs struct {
 	Transactions  []*types.Transaction // Optimism addition: txs forced into the block via engine API
 	GasLimit      *uint64              // Optimism addition: override gas limit of the block to build
 	EIP1559Params []byte               // Optimism addition: encodes Holocene EIP-1559 params
+
+	eParams *EnvParams //parameters for setting up execution environment
+}
+
+func (args *BuildPayloadArgs) PrintArgs() {
+	log.Info("\n****************")
+	log.Info("data", "Parent", args.Parent.Hex(), "feeRecip", args.FeeRecipient.Hex(), "withdrawals", args.Withdrawals)
+	log.Info("data", "timestamp", args.Timestamp, "random", args.Random.Hex())
+	if args.BeaconRoot != nil {
+		log.Info("data", "beacon root", args.BeaconRoot)
+	}
+	if args.NoTxPool || len(args.Transactions) > 0 { // extend if extra payload attributes are used
+		log.Info("data", "no txpool", args.NoTxPool)
+		log.Info("txs", "len txs", uint64(len(args.Transactions)))
+		for _, tx := range args.Transactions {
+			log.Info("tx hash", "tx hash", tx.Hash())
+		}
+	}
+	if args.GasLimit != nil {
+		log.Info("gas", "gas limit", *args.GasLimit)
+	}
+	if len(args.EIP1559Params) != 0 {
+		log.Info("args", "eip", args.EIP1559Params[:])
+	}
+	log.Info("****************\n")
+
 }
 
 // Id computes an 8-byte identifier by hashing the components of the payload arguments.
@@ -103,6 +136,7 @@ type Payload struct {
 	stop         chan struct{}
 	lock         sync.Mutex
 	cond         *sync.Cond
+	State        *state.StateDB // keeping state if subsequent payload wants to use it
 
 	err       error
 	stopOnce  sync.Once
@@ -129,6 +163,13 @@ func newPayload(lifeCtx context.Context, empty *types.Block, witness *stateless.
 	log.Info("Starting work on payload", "id", payload.id)
 	payload.cond = sync.NewCond(&payload.lock)
 	return payload
+}
+
+// withState sets state to the payload
+func (payload *Payload) withState(state *state.StateDB) {
+	payload.lock.Lock()
+	defer payload.lock.Unlock()
+	payload.State = state
 }
 
 var errInterruptedUpdate = errors.New("interrupted payload update")
@@ -164,6 +205,7 @@ func (payload *Payload) update(r *newPayloadResult, elapsed time.Duration) {
 		payload.fullFees = r.fees
 		payload.sidecars = r.sidecars
 		payload.fullWitness = r.witness
+		payload.State = r.stateDB.Copy()
 
 		feesInEther := new(big.Float).Quo(new(big.Float).SetInt(r.fees), big.NewFloat(params.Ether))
 		log.Info("Updated payload",
@@ -306,13 +348,15 @@ func (miner *Miner) buildPayload(args *BuildPayloadArgs, witness bool) (*Payload
 			gasLimit:      args.GasLimit,
 			eip1559Params: args.EIP1559Params,
 			// No RPC requests allowed.
-			rpcCtx: nil,
+			rpcCtx:   nil,
+			envParam: args.eParams,
 		}
 		empty := miner.generateWork(emptyParams, witness)
 		if empty.err != nil {
 			return nil, empty.err
 		}
 		payload := newPayload(miner.lifeCtx, empty.block, empty.witness, args.Id())
+		payload.withState(empty.stateDB.Copy()) // set a copy of the state
 		// make sure to make it appear as full, otherwise it will wait indefinitely for payload building to complete.
 		payload.full = empty.block
 		payload.fullFees = empty.fees
@@ -332,6 +376,7 @@ func (miner *Miner) buildPayload(args *BuildPayloadArgs, witness bool) (*Payload
 		txs:           args.Transactions,
 		gasLimit:      args.GasLimit,
 		eip1559Params: args.EIP1559Params,
+		envParam:      args.eParams, // params to create execution environment
 	}
 
 	// Since we skip building the empty block when using the tx pool, we need to explicitly

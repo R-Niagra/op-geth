@@ -475,20 +475,61 @@ func (api *ConsensusAPI) forkchoiceUpdated(update engine.ForkchoiceStateV1, payl
 			EIP1559Params: eip1559Params,
 		}
 		id := args.Id()
+		nextBuildArgs, err := buildNextPayloadArgs(args, payloadAttributes.NextInfoTxs)
+		if err != nil {
+			return engine.STATUS_INVALID, fmt.Errorf("failed to build args using nextInfoTxs %v", err)
+		}
+
 		// If we already are busy generating this work, then we do not need
 		// to start a second process.
+		// note that we cannot do this for the next build args because
+		// the parents are not known yet
 		if api.localBlocks.has(id) {
+			log.Warn("ID already exists. Returning", "id", id)
 			return valid(&id), nil
 		}
-		payload, err := api.eth.Miner().BuildPayload(args, payloadWitness)
+
+		allPayloadArgs := append([]*miner.BuildPayloadArgs{args}, nextBuildArgs...)
+		payload, err := api.eth.Miner().BuildBatchedPayloads(allPayloadArgs, payloadWitness, api.localBlocks.put)
 		if err != nil {
 			log.Error("Failed to build payload", "err", err)
 			return valid(nil), engine.InvalidPayloadAttributes.With(err)
 		}
-		api.localBlocks.put(id, payload)
+		api.localBlocks.CheckAndPut(id, payload)
 		return valid(&id), nil
 	}
 	return valid(nil), nil
+}
+
+// buildNextPayloadArgs builds next payloads using the base payload. This only works for txs within the same epoch
+func buildNextPayloadArgs(base *miner.BuildPayloadArgs, nextInfoTxs [][]byte) ([]*miner.BuildPayloadArgs, error) {
+	var (
+		argsSet []*miner.BuildPayloadArgs
+	)
+
+	for i, iTx := range nextInfoTxs {
+		var tx types.Transaction
+		if err := tx.UnmarshalBinary(iTx); err != nil {
+			return []*miner.BuildPayloadArgs{}, fmt.Errorf("next info transaction %d is not valid: %v", i, err)
+		}
+		// TODO: update this with block time from a config
+		nextTime := base.Timestamp + uint64((i+1)*2)
+		args := &miner.BuildPayloadArgs{
+			//parent will be set later on
+			Timestamp:    nextTime,
+			FeeRecipient: base.FeeRecipient,
+			Random:       base.Random,
+			BeaconRoot:   base.BeaconRoot,
+			NoTxPool:     base.NoTxPool,
+			Transactions: []*types.Transaction{&tx},
+			GasLimit:     base.GasLimit,
+			Version:      base.Version,
+			Withdrawals:  []*types.Withdrawal{},
+		}
+
+		argsSet = append(argsSet, args)
+	}
+	return argsSet, nil
 }
 
 // ExchangeTransitionConfigurationV1 checks the given configuration against

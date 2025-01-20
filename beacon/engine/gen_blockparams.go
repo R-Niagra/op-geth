@@ -22,6 +22,7 @@ func (p PayloadAttributes) MarshalJSON() ([]byte, error) {
 		Withdrawals           []*types.Withdrawal `json:"withdrawals"`
 		BeaconRoot            *common.Hash        `json:"parentBeaconBlockRoot"`
 		Transactions          []hexutil.Bytes     `json:"transactions,omitempty"  gencodec:"optional"`
+		NextInfoTxs           []hexutil.Bytes     `json:"nextInfoTxs,omitempty"  gencodec:"optional"`
 		NoTxPool              bool                `json:"noTxPool,omitempty" gencodec:"optional"`
 		GasLimit              *hexutil.Uint64     `json:"gasLimit,omitempty" gencodec:"optional"`
 		EIP1559Params         hexutil.Bytes       `json:"eip1559Params,omitempty" gencodec:"optional"`
@@ -36,6 +37,12 @@ func (p PayloadAttributes) MarshalJSON() ([]byte, error) {
 		enc.Transactions = make([]hexutil.Bytes, len(p.Transactions))
 		for k, v := range p.Transactions {
 			enc.Transactions[k] = v
+		}
+	}
+	if p.NextInfoTxs != nil {
+		enc.NextInfoTxs = make([]hexutil.Bytes, len(p.NextInfoTxs))
+		for k, v := range p.NextInfoTxs {
+			enc.NextInfoTxs[k] = v
 		}
 	}
 	enc.NoTxPool = p.NoTxPool
@@ -53,6 +60,7 @@ func (p *PayloadAttributes) UnmarshalJSON(input []byte) error {
 		Withdrawals           []*types.Withdrawal `json:"withdrawals"`
 		BeaconRoot            *common.Hash        `json:"parentBeaconBlockRoot"`
 		Transactions          []hexutil.Bytes     `json:"transactions,omitempty"  gencodec:"optional"`
+		NextInfoTxs           []hexutil.Bytes     `json:"nextInfoTxs,omitempty"  gencodec:"optional"`
 		NoTxPool              *bool               `json:"noTxPool,omitempty" gencodec:"optional"`
 		GasLimit              *hexutil.Uint64     `json:"gasLimit,omitempty" gencodec:"optional"`
 		EIP1559Params         *hexutil.Bytes      `json:"eip1559Params,omitempty" gencodec:"optional"`
@@ -83,6 +91,12 @@ func (p *PayloadAttributes) UnmarshalJSON(input []byte) error {
 		p.Transactions = make([][]byte, len(dec.Transactions))
 		for k, v := range dec.Transactions {
 			p.Transactions[k] = v
+		}
+	}
+	if dec.NextInfoTxs != nil {
+		p.NextInfoTxs = make([][]byte, len(dec.NextInfoTxs))
+		for k, v := range dec.NextInfoTxs {
+			p.NextInfoTxs[k] = v
 		}
 	}
 	if dec.NoTxPool != nil {
