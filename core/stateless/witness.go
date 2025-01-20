@@ -68,6 +68,23 @@ func NewWitness(context *types.Header, chain HeaderReader) (*Witness, error) {
 	}, nil
 }
 
+// NewWitnessWithParent creates an empty witness set with the provided parent
+func NewWitnessWithParent(context, parent *types.Header, chain HeaderReader) (*Witness, error) {
+	if parent == nil {
+		return nil, errors.New("parent header is not available")
+	}
+	// Setting the parent header to acts as a trustless pre-root hash container
+	headers := []*types.Header{parent}
+
+	return &Witness{
+		context: context,
+		Headers: headers,
+		Codes:   make(map[string]struct{}),
+		State:   make(map[string]struct{}),
+		chain:   chain,
+	}, nil
+}
+
 // AddBlockHash adds a "blockhash" to the witness with the designated offset from
 // chain head. Under the hood, this method actually pulls in enough headers from
 // the chain to cover the block being added.

@@ -19,11 +19,13 @@ package miner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/big"
 	"sync"
 	"time"
 
+	"github.com/ethereum/go-ethereum/beacon/engine"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/consensus"
@@ -33,6 +35,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/types/interoptypes"
 	"github.com/ethereum/go-ethereum/eth/tracers"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
 )
 
@@ -180,6 +183,81 @@ func (miner *Miner) SetMaxDASize(maxTxSize, maxBlockSize *big.Int) {
 		miner.config.MaxDABlockSize = new(big.Int).Set(maxBlockSize)
 	}
 	miner.confMu.Unlock()
+}
+
+type PayloadBuildResult struct {
+	*Payload
+	Err error
+}
+
+// BuildBatchedPayloads batch builds the payloads without waiting for the next FCU signal
+// TODO: Cancel batched payload building if a new epoch starts prematurely, or if the FCU
+// requests a payload with an ID different from those provided here
+func (miner *Miner) BuildBatchedPayloads(args []*BuildPayloadArgs, witness bool, checkAndPutPayload func(engine.PayloadID, *Payload)) (*Payload, error) {
+
+	var (
+		nextEnvParams *EnvParams
+		resultCh      = make(chan *PayloadBuildResult)
+	)
+
+	// build payloads in the background
+	go func(firstResultRetCh chan *PayloadBuildResult) {
+		defer close(resultCh)
+		for i, a := range args {
+			//update the args
+			if nextEnvParams != nil {
+				a.Parent = nextEnvParams.Parent.Hash() // set the parent
+				a.eParams = nextEnvParams
+			}
+			pl, err := miner.buildPayload(a, witness)
+			if i == 0 {
+				firstResultRetCh <- &PayloadBuildResult{Payload: pl, Err: err}
+			}
+			if err != nil {
+				return
+			}
+
+			// insert the rest of the payloads
+			if i > 0 {
+				// simply insert the payload
+				log.Info("Inserted concurrent payload")
+				// it's safe to concurrently insert payloads
+				checkAndPutPayload(pl.id, pl)
+			}
+
+			// wait for the payload to stop
+			if _, ok := <-pl.stop; !ok {
+				log.Debug("payload stopped, creating next in batch building")
+			}
+			// if state is not available then we cannot build the next block
+			if pl.State == nil {
+				log.Debug("state not available. Breaking optimistic exec")
+				break
+			}
+
+			// populate env for the next build
+			if pl.full != nil {
+				nextEnvParams = &EnvParams{
+					Parent: pl.full.Header(),
+					State:  pl.State,
+				}
+			} else if pl.empty != nil {
+				nextEnvParams = &EnvParams{
+					Parent: pl.empty.Header(),
+					State:  pl.State,
+				}
+			} else {
+				log.Error("no blocks available in the payload")
+			}
+		}
+	}(resultCh)
+
+	result, ok := <-resultCh
+	if !ok {
+		return nil, errors.New("failed to build payload")
+	}
+
+	return result.Payload, result.Err
 }
 
 // BuildPayload builds the payload according to the provided parameters.

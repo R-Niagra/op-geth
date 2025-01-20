@@ -120,6 +120,8 @@ type generateParams struct {
 	isUpdate      bool               // Optional flag indicating that this is building a discardable update
 
 	rpcCtx context.Context // context to control block-building RPC work. No RPC allowed if nil.
+
+	envParam *EnvParams // params for creating the environment
 }
 
 // generateWork generates a sealing block based on the given parameters.
@@ -209,14 +211,19 @@ func (miner *Miner) prepareWork(genParams *generateParams, witness bool) (*envir
 	miner.confMu.RLock()
 	defer miner.confMu.RUnlock()
 
-	// Find the parent block for sealing task
-	parent := miner.chain.CurrentBlock()
-	if genParams.parentHash != (common.Hash{}) {
-		block := miner.chain.GetBlockByHash(genParams.parentHash)
-		if block == nil {
-			return nil, errors.New("missing parent")
+	var parent *types.Header
+	if genParams.envParam != nil && genParams.envParam.Parent != nil {
+		parent = genParams.envParam.Parent
+	} else {
+		// Find the parent block for sealing task
+		parent = miner.chain.CurrentBlock()
+		if genParams.parentHash != (common.Hash{}) {
+			block := miner.chain.GetBlockByHash(genParams.parentHash)
+			if block == nil {
+				return nil, errors.New("missing parent")
+			}
+			parent = block.Header()
 		}
-		parent = block.Header()
 	}
 	// Sanity check the timestamp correctness, recap the timestamp
 	// to parent+1 if the mutation is allowed.
@@ -292,13 +299,25 @@ func (miner *Miner) prepareWork(genParams *generateParams, witness bool) (*envir
 		header.ExcessBlobGas = &excessBlobGas
 		header.ParentBeaconRoot = genParams.beaconRoot
 	}
+	var (
+		env *environment
+		err error
+	)
 	// Could potentially happen if starting to mine in an odd state.
 	// Note genParams.coinbase can be different with header.Coinbase
 	// since clique algorithm can modify the coinbase field in header.
-	env, err := miner.makeEnv(parent, header, genParams.coinbase, witness, genParams.rpcCtx)
-	if err != nil {
-		log.Error("Failed to create sealing context", "err", err)
-		return nil, err
+	if genParams.envParam != nil && genParams.envParam.State != nil {
+		env, err = miner.makeEnvWithState(genParams.envParam, parent, header, genParams.coinbase, witness, genParams.rpcCtx)
+		if err != nil {
+			log.Error("Failed to create sealing context from given state", "err", err)
+			return nil, err
+		}
+	} else {
+		env, err = miner.makeEnv(parent, header, genParams.coinbase, witness, genParams.rpcCtx)
+		if err != nil {
+			log.Error("Failed to create sealing context", "err", err)
+			return nil, err
+		}
 	}
 	env.noTxs = genParams.noTxs
 	if header.ParentBeaconRoot != nil {
@@ -312,6 +331,35 @@ func (miner *Miner) prepareWork(genParams *generateParams, witness bool) (*envir
 		core.ProcessParentBlockHash(header.ParentHash, vmenv, env.state)
 	}
 	return env, nil
+}
+
+// makeEnvWithState builds execution environmnet with the already built base state
+func (miner *Miner) makeEnvWithState(eParams *EnvParams, parent *types.Header, header *types.Header, coinbase common.Address, witness bool, rpcCtx context.Context) (*environment, error) {
+	if eParams == nil || eParams.State == nil {
+		return nil, errors.New("base state doesn't exist in env")
+	}
+	if eParams.Parent == nil || eParams.Parent.Hash() != parent.Hash() {
+		return nil, errors.New("parent in params doesn't match with the env parent")
+	}
+
+	state := eParams.State
+	if witness {
+		bundle, err := stateless.NewWitnessWithParent(header, parent, miner.chain)
+		if err != nil {
+			return nil, err
+		}
+		state.StartPrefetcher("miner", bundle)
+	}
+	// Note the passed coinbase may be different with header.Coinbase.
+	return &environment{
+		signer:   types.MakeSigner(miner.chainConfig, header.Number, header.Time),
+		state:    state,
+		coinbase: coinbase,
+		header:   header,
+		witness:  state.Witness(),
+		rpcCtx:   rpcCtx,
+	}, nil
+
 }
 
 // makeEnv creates a new environment for the sealing block.
@@ -709,14 +757,19 @@ func (miner *Miner) validateParams(genParams *generateParams) (time.Duration, er
 	miner.confMu.RLock()
 	defer miner.confMu.RUnlock()
 
-	// Find the parent block for sealing task
-	parent := miner.chain.CurrentBlock()
-	if genParams.parentHash != (common.Hash{}) {
-		block := miner.chain.GetBlockByHash(genParams.parentHash)
-		if block == nil {
-			return 0, fmt.Errorf("missing parent %v", genParams.parentHash)
+	var parent *types.Header
+	if genParams.envParam != nil && genParams.envParam.Parent != nil {
+		parent = genParams.envParam.Parent
+	} else {
+		// Find the parent block for sealing task
+		parent = miner.chain.CurrentBlock()
+		if genParams.parentHash != (common.Hash{}) {
+			block := miner.chain.GetBlockByHash(genParams.parentHash)
+			if block == nil {
+				return 0, fmt.Errorf("missing parent %v", genParams.parentHash)
+			}
+			parent = block.Header()
 		}
-		parent = block.Header()
 	}
 
 	// Sanity check the timestamp correctness

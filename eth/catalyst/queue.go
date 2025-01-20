@@ -79,7 +79,7 @@ func (q *payloadQueue) CheckAndPut(id engine.PayloadID, payload *miner.Payload) 
 	defer q.lock.RUnlock()
 	// if the value exists do nothing
 	for _, item := range q.payloads {
-		if item.id == id {
+		if item != nil && item.id == id {
 			return
 		}
 	}
