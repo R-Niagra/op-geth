@@ -73,6 +73,24 @@ func (q *payloadQueue) put(id engine.PayloadID, payload *miner.Payload) {
 	}
 }
 
+// CheckAndPut only inserts if the value doesn't exist
+func (q *payloadQueue) CheckAndPut(id engine.PayloadID, payload *miner.Payload) {
+	q.lock.RLock()
+	defer q.lock.RUnlock()
+	// if the value exists do nothing
+	for _, item := range q.payloads {
+		if item.id == id {
+			return
+		}
+	}
+	// insert otherwise
+	copy(q.payloads[1:], q.payloads)
+	q.payloads[0] = &payloadQueueItem{
+		id:      id,
+		payload: payload,
+	}
+}
+
 // get retrieves a previously stored payload item or nil if it does not exist.
 func (q *payloadQueue) get(id engine.PayloadID, full bool) *engine.ExecutionPayloadEnvelope {
 	q.lock.RLock()
